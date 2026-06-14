@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pysamsung-dplug"
+version = "0.1.0"
+description = "Async client for old Samsung air conditioners using the DPLUG/AC14K protocol (TLS, port 2878)"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "porech" }]
+keywords = ["samsung", "air conditioner", "hvac", "dplug", "ac14k", "2878", "home assistant"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Home Automation",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/porech/pysamsung-dplug"
+Issues = "https://github.com/porech/pysamsung-dplug/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/samsung_dplug"]
+artifacts = ["*.pem", "py.typed"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/samsung_dplug", "README.md", "LICENSE"]

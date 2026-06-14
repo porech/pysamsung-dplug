@@ -1,0 +1,204 @@
+"""Async client for the Samsung 'DPLUG' air-conditioner protocol (TLS, port 2878).
+
+Reverse-engineered from the AC14K / DPLUG-1.x firmware used by older Samsung
+air conditioners with the SWL-Bxxx Wi-Fi modules. Mutual TLS using the public
+Samsung client certificate (bundled ac14k_m.pem), with legacy ciphers enabled.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+import ssl
+from importlib import resources
+
+_LOGGER = logging.getLogger(__name__)
+
+DEFAULT_PORT = 2878
+_TERM = b"\r\n"
+_ATTR_RE = re.compile(r'Attr ID="([^"]*)" Type="([^"]*)" Value="([^"]*)"')
+_DUID_RE = re.compile(r'Device DUID="([^"]*)"')
+_TOKEN_RE = re.compile(r'Token="([^"]*)"')
+
+
+class SamsungAcError(Exception):
+    """Generic protocol error."""
+
+
+class AuthError(SamsungAcError):
+    """Authentication (token) rejected."""
+
+
+def default_cert_path() -> str:
+    """Path to the bundled Samsung client certificate."""
+    return str(resources.files(__package__).joinpath("ac14k_m.pem"))
+
+
+def build_ssl_context(cert_path: str | None = None) -> ssl.SSLContext:
+    """Build the legacy mutual-TLS context. Blocking (file I/O) -> run in executor."""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    ctx.minimum_version = ssl.TLSVersion.TLSv1
+    ctx.set_ciphers("HIGH:!DH:!aNULL:@SECLEVEL=0")
+    ctx.load_cert_chain(cert_path or default_cert_path())
+    return ctx
+
+
+async def async_probe(host: str, ssl_context: ssl.SSLContext, port: int = DEFAULT_PORT) -> bool:
+    """Return True if `host` speaks the DPLUG protocol (used by discovery)."""
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port, ssl=ssl_context, server_hostname=host),
+            timeout=8,
+        )
+    except (OSError, asyncio.TimeoutError, ssl.SSLError):
+        return False
+    try:
+        line = await asyncio.wait_for(reader.readuntil(_TERM), 5)
+        return "DPLUG" in line.decode("utf-8", "replace")
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        writer.close()
+
+
+class SamsungAcClient:
+    """Short-lived-connection client: connect, auth, do one exchange, close.
+
+    Serialised with a lock so polling and commands never overlap on the device
+    (the module accepts essentially one connection at a time).
+    """
+
+    def __init__(self, host, token=None, ssl_context=None, duid=None, port=DEFAULT_PORT):
+        self._host = host
+        self._port = port
+        self._token = token
+        self._ctx = ssl_context
+        self._duid = duid
+        self._lock = asyncio.Lock()
+
+    @property
+    def duid(self):
+        return self._duid
+
+    async def _readline(self, reader, timeout=5.0):
+        data = await asyncio.wait_for(reader.readuntil(_TERM), timeout)
+        return data.decode("utf-8", "replace").strip()
+
+    async def _connect(self):
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(
+                self._host, self._port, ssl=self._ctx, server_hostname=self._host
+            ),
+            timeout=10,
+        )
+        greeting = await self._readline(reader)
+        if "DPLUG" not in greeting:
+            writer.close()
+            raise SamsungAcError(f"Unexpected greeting: {greeting!r}")
+        return reader, writer
+
+    async def _authenticate(self, reader, writer):
+        line = await self._readline(reader)
+        if "InvalidateAccount" not in line:
+            line = await self._readline(reader)
+        writer.write(
+            f'<Request Type="AuthToken"><User Token="{self._token}"/></Request>'.encode()
+            + _TERM
+        )
+        await writer.drain()
+        for _ in range(4):
+            line = await self._readline(reader)
+            if 'Type="AuthToken"' in line and 'Status="Okay"' in line:
+                return
+            if 'Status="Fail"' in line and "Auth" in line:
+                raise AuthError(f"Token rejected: {line}")
+        raise AuthError("No AuthToken Okay received")
+
+    @staticmethod
+    def _parse_state(line: str) -> dict:
+        return {m[0]: m[2] for m in _ATTR_RE.findall(line)}
+
+    async def _read_until(self, reader, needle, timeout=6.0):
+        loop = asyncio.get_running_loop()
+        end = loop.time() + timeout
+        while loop.time() < end:
+            line = await self._readline(reader, timeout=timeout)
+            if needle in line:
+                return line
+        raise SamsungAcError(f"Timeout waiting for {needle}")
+
+    async def async_discover_duid(self):
+        async with self._lock:
+            reader, writer = await self._connect()
+            try:
+                await self._authenticate(reader, writer)
+                writer.write(b'<Request Type="DeviceList"></Request>' + _TERM)
+                await writer.drain()
+                line = await self._read_until(reader, "DeviceList")
+                m = _DUID_RE.search(line)
+                if not m:
+                    raise SamsungAcError(f"No DUID in DeviceList: {line}")
+                self._duid = m.group(1)
+                return self._duid
+            finally:
+                writer.close()
+
+    async def async_get_state(self) -> dict:
+        if not self._duid:
+            await self.async_discover_duid()
+        async with self._lock:
+            reader, writer = await self._connect()
+            try:
+                await self._authenticate(reader, writer)
+                writer.write(
+                    f'<Request Type="DeviceState" DUID="{self._duid}"></Request>'.encode()
+                    + _TERM
+                )
+                await writer.drain()
+                line = await self._read_until(reader, 'Type="DeviceState"')
+                if 'Status="Okay"' not in line:
+                    raise SamsungAcError(f"DeviceState failed: {line}")
+                return self._parse_state(line)
+            finally:
+                writer.close()
+
+    async def async_set(self, attr: str, value: str) -> None:
+        if not self._duid:
+            await self.async_discover_duid()
+        async with self._lock:
+            reader, writer = await self._connect()
+            try:
+                await self._authenticate(reader, writer)
+                cmd = (
+                    f'<Request Type="DeviceControl"><Control CommandID="cmd" '
+                    f'DUID="{self._duid}"><Attr ID="{attr}" Value="{value}" />'
+                    f"</Control></Request>"
+                )
+                writer.write(cmd.encode() + _TERM)
+                await writer.drain()
+                line = await self._read_until(reader, 'Type="DeviceControl"')
+                if 'Status="Okay"' not in line:
+                    raise SamsungAcError(f"Control {attr}={value} failed: {line}")
+            finally:
+                writer.close()
+
+    async def async_get_token(self, power_on_timeout=40.0) -> str:
+        """One-shot token acquisition. User must power the unit ON during the window."""
+        async with self._lock:
+            reader, writer = await self._connect()
+            try:
+                line = await self._readline(reader)
+                if "InvalidateAccount" not in line:
+                    line = await self._readline(reader)
+                writer.write(b'<Request Type="GetToken" />' + _TERM)
+                await writer.drain()
+                await self._read_until(reader, 'Type="GetToken"')  # Ready
+                token_line = await self._read_until(reader, "Token=", timeout=power_on_timeout)
+                m = _TOKEN_RE.search(token_line)
+                if not m:
+                    raise SamsungAcError(f"No token in: {token_line}")
+                return m.group(1)
+            finally:
+                writer.close()
