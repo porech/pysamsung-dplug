@@ -8,6 +8,7 @@ from .client import (
     build_ssl_context,
     default_cert_path,
 )
+from .options import OptionCode
 
 __all__ = [
     "SamsungAcClient",
@@ -16,7 +17,8 @@ __all__ = [
     "build_ssl_context",
     "async_probe",
     "default_cert_path",
+    "OptionCode",
     "DEFAULT_PORT",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
