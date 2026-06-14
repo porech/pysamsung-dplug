@@ -9,9 +9,11 @@ from .client import (
     default_cert_path,
 )
 from .options import OptionCode
+from .stream import SamsungAcStream
 
 __all__ = [
     "SamsungAcClient",
+    "SamsungAcStream",
     "SamsungAcError",
     "AuthError",
     "build_ssl_context",
@@ -21,4 +23,4 @@ __all__ = [
     "DEFAULT_PORT",
 ]
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
