@@ -50,6 +50,7 @@ class SamsungAcStream:
         self._reader_task: asyncio.Task | None = None
         self._watchdog_task: asyncio.Task | None = None
         self._last_rx = 0.0
+        self._waiters: list = []  # (predicate(state)->bool, Future)
 
     # -- public API ----------------------------------------------------
     @property
@@ -81,7 +82,10 @@ class SamsungAcStream:
                 t.cancel()
         await self._close_socket()
 
-    async def async_set(self, attr: str, value: str) -> None:
+    async def async_set(self, attr: str, value: str, confirm: bool = True, confirm_timeout: float = 8.0) -> bool:
+        """Send a command and (by default) wait until the device confirms the new
+        value via a push, so callers can show a pending->applied state with no flicker.
+        Returns True if confirmed within the timeout."""
         cmd = (
             f'<Request Type="DeviceControl"><Control CommandID="cmd" '
             f'DUID="{self._duid}"><Attr ID="{attr}" Value="{value}" /></Control></Request>'
@@ -94,6 +98,38 @@ class SamsungAcStream:
             await self._force_reconnect()
             await self._ensure_ready()
             await self._send(cmd)
+        if confirm:
+            return await self._wait_confirm(attr, value, confirm_timeout)
+        return True
+
+    async def _wait_confirm(self, attr: str, value: str, timeout: float) -> bool:
+        target = str(value)
+        if str(self._state.get(attr)) == target:
+            return True
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        pred = lambda st, a=attr, t=target: str(st.get(a)) == t  # noqa: E731
+        self._waiters.append((pred, fut))
+        try:
+            await asyncio.wait_for(fut, timeout)
+            return True
+        except asyncio.TimeoutError:
+            return str(self._state.get(attr)) == target
+        finally:
+            self._waiters = [(p, f) for (p, f) in self._waiters if f is not fut]
+
+    def _resolve_waiters(self) -> None:
+        if not self._waiters:
+            return
+        still = []
+        for pred, fut in self._waiters:
+            if fut.done():
+                continue
+            if pred(self._state):
+                fut.set_result(True)
+            else:
+                still.append((pred, fut))
+        self._waiters = still
 
     async def async_refresh(self) -> None:
         """Request a full DeviceState now (used as the fallback poll)."""
@@ -188,6 +224,7 @@ class SamsungAcStream:
         if not attrs and not full:
             return
         self._state.update(attrs)
+        self._resolve_waiters()
         if full and not self._ready.is_set():
             self._ready.set()
         if self._on_update:
