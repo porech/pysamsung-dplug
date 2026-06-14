@@ -11,6 +11,7 @@ import logging
 import re
 import ssl
 from importlib import resources
+from xml.sax.saxutils import quoteattr
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -181,6 +182,56 @@ class SamsungAcClient:
                 line = await self._read_until(reader, 'Type="DeviceControl"')
                 if 'Status="Okay"' not in line:
                     raise SamsungAcError(f"Control {attr}={value} failed: {line}")
+            finally:
+                writer.close()
+
+    async def async_provision(self, ssid, key, auth_mode="WPA2", encrypt_type="AES") -> bool:
+        """Send Wi-Fi credentials while the unit is in AP mode (host 192.168.1.254).
+
+        Unauthenticated, sent right after InvalidateAccount. auth_mode in
+        OPEN|WEP|WPA|WPA2, encrypt_type in TKIP|AES (ignored for OPEN/WEP).
+        """
+        async with self._lock:
+            reader, writer = await self._connect()
+            try:
+                line = await self._readline(reader)
+                if "InvalidateAccount" not in line:
+                    line = await self._readline(reader)
+                inner = f"<ConnectionConfig SSID={quoteattr(ssid)} AuthMode={quoteattr(auth_mode)}"
+                if auth_mode == "WEP":
+                    inner += f" Key1={quoteattr(key)}"
+                elif auth_mode != "OPEN":
+                    inner += f" EncryptType={quoteattr(encrypt_type)} Key1={quoteattr(key)}"
+                inner += "/>"
+                msg = f'<Request Type="APConnectionConfig">{inner}</Request>'
+                writer.write(msg.encode() + _TERM)
+                await writer.drain()
+                resp = await self._read_until(reader, 'Type="APConnectionConfig"')
+                if 'Status="Okay"' not in resp:
+                    raise SamsungAcError(f"Provisioning failed: {resp}")
+                return True
+            finally:
+                writer.close()
+
+    async def async_get_sw_info(self) -> dict:
+        """Return firmware versions: {'sw':..., 'panel':..., 'outdoor':...}."""
+        if not self._duid:
+            await self.async_discover_duid()
+        async with self._lock:
+            reader, writer = await self._connect()
+            try:
+                await self._authenticate(reader, writer)
+                writer.write(
+                    f'<Request Type="GetSWInfo" DUID="{self._duid}"></Request>'.encode() + _TERM
+                )
+                await writer.drain()
+                line = await self._read_until(reader, 'Type="GetSWInfo"')
+                out: dict[str, str] = {}
+                for tag, key in (("SWInfo", "sw"), ("PannelInfo", "panel"), ("OutDoorInfo", "outdoor")):
+                    m = re.search(tag + r' Version="([^"]*)"', line)
+                    if m:
+                        out[key] = m.group(1)
+                return out
             finally:
                 writer.close()
 
