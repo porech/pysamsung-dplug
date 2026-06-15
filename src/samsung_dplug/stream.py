@@ -51,8 +51,13 @@ class SamsungAcStream:
         self._watchdog_task: asyncio.Task | None = None
         self._last_rx = 0.0
         self._waiters: list = []  # (predicate(state)->bool, Future)
+        self.auth_failed = False
 
     # -- public API ----------------------------------------------------
+    def set_on_update(self, callback: Callable[[dict], None] | None) -> None:
+        """Register a callback invoked (in the event loop) on each state change."""
+        self._on_update = callback
+
     @property
     def state(self) -> dict:
         return dict(self._state)
@@ -189,7 +194,10 @@ class SamsungAcStream:
             except asyncio.CancelledError:
                 raise
             except Exception as err:  # noqa: BLE001
-                if self._closing:
+                if self._closing or self.auth_failed:
+                    # auth failure won't fix itself by reconnecting -> stop and
+                    # let the integration trigger a reauth flow.
+                    await self._close_socket()
                     break
                 self._log.debug("Samsung AC stream disconnected: %s (retry in %ss)", err, backoff)
                 await self._close_socket()
@@ -207,6 +215,7 @@ class SamsungAcStream:
             else:
                 await self._send('<Request Type="DeviceList"></Request>')
         elif 'Status="Fail"' in line and "Auth" in line:
+            self.auth_failed = True
             raise SamsungAcError(f"auth failed: {line}")
         elif 'Type="DeviceList"' in line:
             m = _DUID_RE.search(line)
