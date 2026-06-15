@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pysamsung-dplug"
-version = "0.9.1"
+version = "1.0.0"
 description = "Async client for old Samsung air conditioners using the DPLUG/AC14K protocol (TLS, port 2878)"
 readme = "README.md"
 license = { text = "MIT" }

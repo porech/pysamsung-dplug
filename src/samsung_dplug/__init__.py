@@ -45,4 +45,4 @@ __all__ = [
     "DEFAULT_PORT",
 ]
 
-__version__ = "0.9.1"
+__version__ = "1.0.0"
