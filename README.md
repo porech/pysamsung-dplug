@@ -79,12 +79,17 @@ await client.async_set_schedule(                   # turn on at 07:00 on weekday
 await client.async_delete_schedule("0")
 ```
 
-## Protocol notes
+## Protocol documentation
 
 Reverse-engineered from the official *Smart Air Conditioner* app and live
 devices. The unit greets with `DPLUG-1.x`, requires mutual TLS, and uses an
-XML request/response protocol. The DUID equals the Wi-Fi module MAC without
-separators. See the Home Assistant integration repo for the full write-up.
+XML request/response protocol over port 2878; the DUID equals the Wi-Fi module
+MAC without separators.
+
+The full, structured write-up lives in [`docs/`](docs/README.md) — transport &
+TLS, connection lifecycle & auth, state & control, scheduling, the other
+commands, capability decoding, WiFi provisioning, and the reverse-engineering
+notes behind it all.
 
 ## License
 
