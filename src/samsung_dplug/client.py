@@ -14,6 +14,19 @@ import ssl
 from importlib import resources
 from xml.sax.saxutils import quoteattr
 
+from .commands import (
+    PowerUsageEntry,
+    build_change_nickname,
+    build_get_power_logging_mode,
+    build_get_power_usage,
+    build_get_region_code,
+    build_reset_power_logging,
+    build_set_power_logging_mode,
+    build_set_region_code,
+    parse_power_logging_mode,
+    parse_power_usage,
+    parse_region_code,
+)
 from .schedule import (
     Schedule,
     build_delete_schedule,
@@ -311,6 +324,49 @@ class SamsungAcClient:
                     raise SamsungAcError(f"DeleteSchedule failed: {line}")
             finally:
                 writer.close()
+
+    async def _exchange(self, payload: str, needle: str, *, need_duid: bool = False, check_okay: bool = True) -> str:
+        """Connect, authenticate, send one request and return the matching response line."""
+        if need_duid and not self._duid:
+            await self.async_discover_duid()
+        async with self._lock:
+            reader, writer = await self._connect()
+            try:
+                await self._authenticate(reader, writer)
+                writer.write(payload.encode() + _TERM)
+                await writer.drain()
+                line = await self._read_until(reader, needle)
+                if check_okay and 'Status="Okay"' not in line:
+                    raise SamsungAcError(f"{needle} failed: {line}")
+                return line
+            finally:
+                writer.close()
+
+    # -- power usage / logging (best-effort; may be unsupported on a given unit) --
+    async def async_get_power_usage(self, date_from, date_to, unit="Hour", tz=datetime.timezone.utc) -> list[PowerUsageEntry]:
+        line = await self._exchange(build_get_power_usage(date_from, date_to, unit, tz), 'Type="GetPowerUsage"')
+        return parse_power_usage(line, tz)
+
+    async def async_get_power_logging_mode(self) -> bool | None:
+        line = await self._exchange(build_get_power_logging_mode(), 'Type="GetPowerLoggingMode"')
+        return parse_power_logging_mode(line)
+
+    async def async_set_power_logging(self, enable: bool) -> None:
+        await self._exchange(build_set_power_logging_mode(enable), 'Type="SetPowerLoggingMode"')
+
+    async def async_reset_power_logging(self) -> None:
+        await self._exchange(build_reset_power_logging(), 'Type="ResetPowerLogging"')
+
+    # -- nickname / region (best-effort) --
+    async def async_set_nickname(self, nickname: str) -> None:
+        await self._exchange(build_change_nickname(self._duid, nickname), 'Type="ChangeNickname"', need_duid=True)
+
+    async def async_get_region_code(self) -> str | None:
+        line = await self._exchange(build_get_region_code(), 'Type="GetRegionCode"')
+        return parse_region_code(line)
+
+    async def async_set_region_code(self, code: str) -> None:
+        await self._exchange(build_set_region_code(self._duid, code), 'Type="SetRegionCode"', need_duid=True)
 
     async def async_get_token(self, power_on_timeout=40.0) -> str:
         """One-shot token acquisition. User must power the unit ON during the window."""

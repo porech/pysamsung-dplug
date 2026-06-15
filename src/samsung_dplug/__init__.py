@@ -9,6 +9,7 @@ from .client import (
     default_cert_path,
     parse_start_from,
 )
+from .commands import PowerUsageEntry
 from .options import OptionCode
 from .schedule import (
     EVERYDAY_TYPE,
@@ -32,6 +33,7 @@ __all__ = [
     "default_cert_path",
     "parse_start_from",
     "OptionCode",
+    "PowerUsageEntry",
     "Schedule",
     "ONCE",
     "EVERYDAY_TYPE",
@@ -43,4 +45,4 @@ __all__ = [
     "DEFAULT_PORT",
 ]
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"

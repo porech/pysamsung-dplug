@@ -15,6 +15,19 @@ import re
 from collections.abc import Callable
 
 from .client import SamsungAcError, _DUID_RE, _TERM, parse_start_from
+from .commands import (
+    PowerUsageEntry,
+    build_change_nickname,
+    build_get_power_logging_mode,
+    build_get_power_usage,
+    build_get_region_code,
+    build_reset_power_logging,
+    build_set_power_logging_mode,
+    build_set_region_code,
+    parse_power_logging_mode,
+    parse_power_usage,
+    parse_region_code,
+)
 from .schedule import (
     Schedule,
     build_delete_schedule,
@@ -182,6 +195,39 @@ class SamsungAcStream:
         line = await self._request(build_delete_schedule(schedule_id), 'Type="DeleteSchedule"')
         if 'Status="Okay"' not in line:
             raise SamsungAcError(f"DeleteSchedule failed: {line}")
+
+    # -- power usage / logging, nickname, region (best-effort) --------------
+    async def async_get_power_usage(self, date_from, date_to, unit="Hour", tz=datetime.timezone.utc) -> list[PowerUsageEntry]:
+        line = await self._request(build_get_power_usage(date_from, date_to, unit, tz), 'Type="GetPowerUsage"')
+        return parse_power_usage(line, tz)
+
+    async def async_get_power_logging_mode(self) -> bool | None:
+        line = await self._request(build_get_power_logging_mode(), 'Type="GetPowerLoggingMode"')
+        return parse_power_logging_mode(line)
+
+    async def async_set_power_logging(self, enable: bool) -> None:
+        line = await self._request(build_set_power_logging_mode(enable), 'Type="SetPowerLoggingMode"')
+        if 'Status="Okay"' not in line:
+            raise SamsungAcError(f"SetPowerLoggingMode failed: {line}")
+
+    async def async_reset_power_logging(self) -> None:
+        line = await self._request(build_reset_power_logging(), 'Type="ResetPowerLogging"')
+        if 'Status="Okay"' not in line:
+            raise SamsungAcError(f"ResetPowerLogging failed: {line}")
+
+    async def async_set_nickname(self, nickname: str) -> None:
+        line = await self._request(build_change_nickname(self._duid, nickname), 'Type="ChangeNickname"')
+        if 'Status="Okay"' not in line:
+            raise SamsungAcError(f"ChangeNickname failed: {line}")
+
+    async def async_get_region_code(self) -> str | None:
+        line = await self._request(build_get_region_code(), 'Type="GetRegionCode"')
+        return parse_region_code(line)
+
+    async def async_set_region_code(self, code: str) -> None:
+        line = await self._request(build_set_region_code(self._duid, code), 'Type="SetRegionCode"')
+        if 'Status="Okay"' not in line:
+            raise SamsungAcError(f"SetRegionCode failed: {line}")
 
     async def async_refresh(self) -> None:
         """Request a full DeviceState now (used as the fallback poll)."""
