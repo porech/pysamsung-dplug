@@ -107,7 +107,7 @@ class SamsungAcClient:
     (the module accepts essentially one connection at a time).
     """
 
-    def __init__(self, host, token=None, ssl_context=None, duid=None, port=DEFAULT_PORT):
+    def __init__(self, host: str, token: str | None = None, ssl_context: ssl.SSLContext | None = None, duid: str | None = None, port: int = DEFAULT_PORT) -> None:
         self._host = host
         self._port = port
         self._token = token
@@ -117,7 +117,7 @@ class SamsungAcClient:
         self._start_from: datetime.datetime | None = None
 
     @property
-    def duid(self):
+    def duid(self) -> str | None:
         return self._duid
 
     @property
@@ -125,11 +125,11 @@ class SamsungAcClient:
         """Device clock (UTC) as reported at the last authentication."""
         return self._start_from
 
-    async def _readline(self, reader, timeout=5.0):
+    async def _readline(self, reader: asyncio.StreamReader, timeout: float = 5.0) -> str:
         data = await asyncio.wait_for(reader.readuntil(_TERM), timeout)
         return data.decode("utf-8", "replace").strip()
 
-    async def _connect(self):
+    async def _connect(self) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(
                 self._host, self._port, ssl=self._ctx, server_hostname=self._host
@@ -142,7 +142,7 @@ class SamsungAcClient:
             raise SamsungAcError(f"Unexpected greeting: {greeting!r}")
         return reader, writer
 
-    async def _authenticate(self, reader, writer):
+    async def _authenticate(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         line = await self._readline(reader)
         if "InvalidateAccount" not in line:
             line = await self._readline(reader)
@@ -161,10 +161,10 @@ class SamsungAcClient:
         raise AuthError("No AuthToken Okay received")
 
     @staticmethod
-    def _parse_state(line: str) -> dict:
+    def _parse_state(line: str) -> dict[str, str]:
         return {m[0]: m[2] for m in _ATTR_RE.findall(line)}
 
-    async def _read_until(self, reader, needle, timeout=6.0):
+    async def _read_until(self, reader: asyncio.StreamReader, needle: str, timeout: float = 6.0) -> str:
         loop = asyncio.get_running_loop()
         end = loop.time() + timeout
         while loop.time() < end:
@@ -173,7 +173,7 @@ class SamsungAcClient:
                 return line
         raise SamsungAcError(f"Timeout waiting for {needle}")
 
-    async def async_discover_duid(self):
+    async def async_discover_duid(self) -> str:
         async with self._lock:
             reader, writer = await self._connect()
             try:
@@ -189,7 +189,13 @@ class SamsungAcClient:
             finally:
                 writer.close()
 
-    async def async_get_state(self) -> dict:
+    async def _require_duid(self) -> str:
+        if not self._duid:
+            await self.async_discover_duid()
+        assert self._duid is not None
+        return self._duid
+
+    async def async_get_state(self) -> dict[str, str]:
         if not self._duid:
             await self.async_discover_duid()
         async with self._lock:
@@ -228,7 +234,7 @@ class SamsungAcClient:
             finally:
                 writer.close()
 
-    async def async_provision(self, ssid, key, auth_mode="WPA2", encrypt_type="AES") -> bool:
+    async def async_provision(self, ssid: str, key: str, auth_mode: str = "WPA2", encrypt_type: str = "AES") -> bool:
         """Send Wi-Fi credentials while the unit is in AP mode (host 192.168.1.254).
 
         Unauthenticated, sent right after InvalidateAccount. auth_mode in
@@ -256,7 +262,7 @@ class SamsungAcClient:
             finally:
                 writer.close()
 
-    async def async_get_sw_info(self) -> dict:
+    async def async_get_sw_info(self) -> dict[str, str]:
         """Return firmware versions: {'sw':..., 'panel':..., 'outdoor':...}."""
         if not self._duid:
             await self.async_discover_duid()
@@ -278,7 +284,7 @@ class SamsungAcClient:
             finally:
                 writer.close()
 
-    async def async_get_schedules(self, tz=datetime.timezone.utc, now=None) -> list[Schedule]:
+    async def async_get_schedules(self, tz: datetime.tzinfo = datetime.timezone.utc, now: datetime.datetime | None = None) -> list[Schedule]:
         """Return the schedules stored on the unit, in local (`tz`) terms."""
         if not self._duid:
             await self.async_discover_duid()
@@ -286,7 +292,7 @@ class SamsungAcClient:
             reader, writer = await self._connect()
             try:
                 await self._authenticate(reader, writer)
-                writer.write(build_get_schedule(self._duid).encode() + _TERM)
+                writer.write(build_get_schedule(await self._require_duid()).encode() + _TERM)
                 await writer.drain()
                 line = await self._read_until(reader, 'Type="GetSchedule"')
                 if 'Status="Okay"' not in line:
@@ -295,7 +301,7 @@ class SamsungAcClient:
             finally:
                 writer.close()
 
-    async def async_set_schedule(self, sched: Schedule, tz=datetime.timezone.utc, now=None) -> None:
+    async def async_set_schedule(self, sched: Schedule, tz: datetime.tzinfo = datetime.timezone.utc, now: datetime.datetime | None = None) -> None:
         """Create (or, if `sched.schedule_id` is set, edit) an on-device schedule."""
         if not self._duid:
             await self.async_discover_duid()
@@ -303,7 +309,7 @@ class SamsungAcClient:
             reader, writer = await self._connect()
             try:
                 await self._authenticate(reader, writer)
-                writer.write(build_set_schedule(sched, self._duid, tz, now).encode() + _TERM)
+                writer.write(build_set_schedule(sched, await self._require_duid(), tz, now).encode() + _TERM)
                 await writer.drain()
                 line = await self._read_until(reader, 'Type="SetSchedule"')
                 if 'Status="Okay"' not in line:
@@ -343,7 +349,7 @@ class SamsungAcClient:
                 writer.close()
 
     # -- power usage / logging (best-effort; may be unsupported on a given unit) --
-    async def async_get_power_usage(self, date_from, date_to, unit="Hour", tz=datetime.timezone.utc) -> list[PowerUsageEntry]:
+    async def async_get_power_usage(self, date_from: datetime.datetime, date_to: datetime.datetime, unit: str = "Hour", tz: datetime.tzinfo = datetime.timezone.utc) -> list[PowerUsageEntry]:
         line = await self._exchange(build_get_power_usage(date_from, date_to, unit, tz), 'Type="GetPowerUsage"')
         return parse_power_usage(line, tz)
 
@@ -359,16 +365,16 @@ class SamsungAcClient:
 
     # -- nickname / region (best-effort) --
     async def async_set_nickname(self, nickname: str) -> None:
-        await self._exchange(build_change_nickname(self._duid, nickname), 'Type="ChangeNickname"', need_duid=True)
+        await self._exchange(build_change_nickname(await self._require_duid(), nickname), 'Type="ChangeNickname"')
 
     async def async_get_region_code(self) -> str | None:
         line = await self._exchange(build_get_region_code(), 'Type="GetRegionCode"')
         return parse_region_code(line)
 
     async def async_set_region_code(self, code: str) -> None:
-        await self._exchange(build_set_region_code(self._duid, code), 'Type="SetRegionCode"', need_duid=True)
+        await self._exchange(build_set_region_code(await self._require_duid(), code), 'Type="SetRegionCode"')
 
-    async def async_get_token(self, power_on_timeout=40.0) -> str:
+    async def async_get_token(self, power_on_timeout: float = 40.0) -> str:
         """One-shot token acquisition. User must power the unit ON during the window."""
         async with self._lock:
             reader, writer = await self._connect()

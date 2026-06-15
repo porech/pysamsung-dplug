@@ -12,6 +12,7 @@ import asyncio
 import datetime
 import logging
 import re
+import ssl
 from collections.abc import Callable
 
 from .client import SamsungAcError, _DUID_RE, _TERM, parse_start_from
@@ -47,10 +48,10 @@ class SamsungAcStream:
         self,
         host: str,
         token: str,
-        ssl_context,
+        ssl_context: ssl.SSLContext,
         duid: str | None = None,
         port: int = 2878,
-        on_update: Callable[[dict], None] | None = None,
+        on_update: Callable[[dict[str, str]], None] | None = None,
         on_availability: Callable[[bool], None] | None = None,
         fallback_interval: float = 300.0,
         logger: logging.Logger | None = None,
@@ -67,20 +68,20 @@ class SamsungAcStream:
         self._log = logger or _LOGGER
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
-        self._state: dict = {}
+        self._state: dict[str, str] = {}
         self._ready = asyncio.Event()
         self._write_lock = asyncio.Lock()
         self._closing = False
-        self._reader_task: asyncio.Task | None = None
-        self._watchdog_task: asyncio.Task | None = None
+        self._reader_task: asyncio.Task[None] | None = None
+        self._watchdog_task: asyncio.Task[None] | None = None
         self._last_rx = 0.0
-        self._waiters: list = []  # (predicate(state)->bool, Future)
-        self._resp_waiters: list = []  # (needle, Future) for request/response exchanges
+        self._waiters: list[tuple[Callable[[dict[str, str]], bool], asyncio.Future[bool]]] = []
+        self._resp_waiters: list[tuple[str, asyncio.Future[str]]] = []
         self.auth_failed = False
-        self.start_from = None  # device clock (UTC) from the AuthToken response
+        self.start_from: datetime.datetime | None = None  # device clock (UTC) from auth
 
     # -- public API ----------------------------------------------------
-    def set_on_update(self, callback: Callable[[dict], None] | None) -> None:
+    def set_on_update(self, callback: Callable[[dict[str, str]], None] | None) -> None:
         """Register a callback invoked (in the event loop) on each state change."""
         self._on_update = callback
 
@@ -99,7 +100,7 @@ class SamsungAcStream:
                 self._log.exception("on_availability callback failed")
 
     @property
-    def state(self) -> dict:
+    def state(self) -> dict[str, str]:
         return dict(self._state)
 
     @property
@@ -109,6 +110,11 @@ class SamsungAcStream:
     @property
     def connected(self) -> bool:
         return self._ready.is_set()
+
+    def _require_duid(self) -> str:
+        if self._duid is None:
+            raise SamsungAcError("DUID not yet known")
+        return self._duid
 
     async def start(self) -> None:
         self._closing = False
@@ -194,16 +200,16 @@ class SamsungAcStream:
         finally:
             self._resp_waiters = [(n, f) for (n, f) in self._resp_waiters if f is not fut]
 
-    async def async_get_schedules(self, tz=datetime.timezone.utc, now=None) -> list[Schedule]:
+    async def async_get_schedules(self, tz: datetime.tzinfo = datetime.timezone.utc, now: datetime.datetime | None = None) -> list[Schedule]:
         """Return the schedules stored on the unit, in local (`tz`) terms."""
-        line = await self._request(build_get_schedule(self._duid), 'Type="GetSchedule"')
+        line = await self._request(build_get_schedule(self._require_duid()), 'Type="GetSchedule"')
         if 'Status="Okay"' not in line:
             raise SamsungAcError(f"GetSchedule failed: {line}")
         return parse_schedules(line, tz, now)
 
-    async def async_set_schedule(self, sched: Schedule, tz=datetime.timezone.utc, now=None) -> None:
+    async def async_set_schedule(self, sched: Schedule, tz: datetime.tzinfo = datetime.timezone.utc, now: datetime.datetime | None = None) -> None:
         """Create (or, if `sched.schedule_id` is set, edit) an on-device schedule."""
-        line = await self._request(build_set_schedule(sched, self._duid, tz, now), 'Type="SetSchedule"')
+        line = await self._request(build_set_schedule(sched, self._require_duid(), tz, now), 'Type="SetSchedule"')
         if 'Status="Okay"' not in line:
             raise SamsungAcError(f"SetSchedule failed: {line}")
 
@@ -214,7 +220,7 @@ class SamsungAcStream:
             raise SamsungAcError(f"DeleteSchedule failed: {line}")
 
     # -- power usage / logging, nickname, region (best-effort) --------------
-    async def async_get_power_usage(self, date_from, date_to, unit="Hour", tz=datetime.timezone.utc) -> list[PowerUsageEntry]:
+    async def async_get_power_usage(self, date_from: datetime.datetime, date_to: datetime.datetime, unit: str = "Hour", tz: datetime.tzinfo = datetime.timezone.utc) -> list[PowerUsageEntry]:
         line = await self._request(build_get_power_usage(date_from, date_to, unit, tz), 'Type="GetPowerUsage"')
         return parse_power_usage(line, tz)
 
@@ -233,7 +239,7 @@ class SamsungAcStream:
             raise SamsungAcError(f"ResetPowerLogging failed: {line}")
 
     async def async_set_nickname(self, nickname: str) -> None:
-        line = await self._request(build_change_nickname(self._duid, nickname), 'Type="ChangeNickname"')
+        line = await self._request(build_change_nickname(self._require_duid(), nickname), 'Type="ChangeNickname"')
         if 'Status="Okay"' not in line:
             raise SamsungAcError(f"ChangeNickname failed: {line}")
 
@@ -242,7 +248,7 @@ class SamsungAcStream:
         return parse_region_code(line)
 
     async def async_set_region_code(self, code: str) -> None:
-        line = await self._request(build_set_region_code(self._duid, code), 'Type="SetRegionCode"')
+        line = await self._request(build_set_region_code(self._require_duid(), code), 'Type="SetRegionCode"')
         if 'Status="Okay"' not in line:
             raise SamsungAcError(f"SetRegionCode failed: {line}")
 
@@ -298,6 +304,7 @@ class SamsungAcStream:
             try:
                 await self._open()
                 while not self._closing:
+                    assert self._reader is not None
                     data = await self._reader.readuntil(_TERM)
                     self._last_rx = loop.time()
                     await self._handle(data.decode("utf-8", "replace").strip())

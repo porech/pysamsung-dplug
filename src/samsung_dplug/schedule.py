@@ -30,6 +30,7 @@ Key subtleties (all faithfully reproduced below):
 from __future__ import annotations
 
 import datetime
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import quoteattr
@@ -73,7 +74,7 @@ def mask_to_weekdays(mask: int) -> set[int]:
     return {_BIT_TO_PY[bit] for bit, _ in _BIT_ORDER if mask & bit}
 
 
-def weekdays_to_mask(weekdays) -> int:
+def weekdays_to_mask(weekdays: Iterable[int]) -> int:
     """Set/iterable of Python weekday()s (Mon=0 .. Sun=6) -> bitmask."""
     mask = 0
     for wd in weekdays:
@@ -142,7 +143,7 @@ def _now_in(tz: datetime.tzinfo, now: datetime.datetime | None) -> datetime.date
     return now.replace(second=0, microsecond=0)
 
 
-def _local_to_wire(hour: int, minute: int, mask: int, tz, now) -> tuple[int, int, int]:
+def _local_to_wire(hour: int, minute: int, mask: int, tz: datetime.tzinfo, now: datetime.datetime | None) -> tuple[int, int, int]:
     """Local (hour, minute, day-mask) -> UTC (hour, minute, day-mask).
 
     Mirrors SetScheduleRequest.toXml(): time goes out in UTC and, if the
@@ -157,7 +158,7 @@ def _local_to_wire(hour: int, minute: int, mask: int, tz, now) -> tuple[int, int
     return utc_wall.hour, utc_wall.minute, mask
 
 
-def _wire_to_local(hour: int, minute: int, mask: int, tz, now) -> tuple[int, int, int]:
+def _wire_to_local(hour: int, minute: int, mask: int, tz: datetime.tzinfo, now: datetime.datetime | None) -> tuple[int, int, int]:
     """UTC (hour, minute, day-mask) -> local, reversing _local_to_wire."""
     ref = _now_in(tz, now)
     base = ref.replace(hour=hour, minute=minute)  # fields hold the UTC clock
@@ -230,7 +231,11 @@ def parse_schedules(
                 hour, minute, mask = _wire_to_local(uh, um, mask, tz, now)
             except ValueError:
                 pass
-        attrs = {a.get("ID"): a.get("Value") for a in si.iter("Attr") if a.get("ID")}
+        attrs: dict[str, str] = {}
+        for a in si.iter("Attr"):
+            aid = a.get("ID")
+            if aid is not None:
+                attrs[aid] = a.get("Value") or ""
         out.append(
             Schedule(
                 schedule_id=si.get("ScheduleID") or "",

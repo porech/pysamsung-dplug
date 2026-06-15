@@ -33,7 +33,7 @@ class OptionCode:
         return (self.code & mask) == mask
 
     @classmethod
-    def from_state(cls, state: dict) -> "OptionCode | None":
+    def from_state(cls, state: dict[str, str]) -> "OptionCode | None":
         v = (state or {}).get("AC_ADD2_OPTIONCODE")
         if v is not None and str(v).lstrip("-").isdigit():
             return cls(int(v))
@@ -104,7 +104,7 @@ class OptionCode:
     def inverter(self) -> bool:
         return self._has(self.OPTION_INV_TYPE)
 
-    def as_dict(self) -> dict:
+    def as_dict(self) -> dict[str, bool]:
         return {
             n: getattr(self, n)
             for n in (

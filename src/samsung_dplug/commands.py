@@ -47,9 +47,11 @@ def _find_attr(root: ET.Element, tag: str, attr: str) -> str | None:
 
 
 def _float(value: str | None) -> float:
+    if value is None:
+        return 0.0
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except ValueError:
         return 0.0
 
 
@@ -109,7 +111,7 @@ def parse_power_logging_mode(line: str) -> bool | None:
     except ET.ParseError:
         return None
     mode = root.get("Mode") or _find_attr(root, "PowerLoggingMode", "Mode")
-    return {"Enable": True, "Disable": False}.get(mode)
+    return {"Enable": True, "Disable": False}.get(mode or "")
 
 
 # -- nickname ----------------------------------------------------------------
