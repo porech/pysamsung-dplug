@@ -7,6 +7,7 @@ from .client import (
     async_probe,
     build_ssl_context,
     default_cert_path,
+    parse_start_from,
 )
 from .options import OptionCode
 from .stream import SamsungAcStream
@@ -19,8 +20,9 @@ __all__ = [
     "build_ssl_context",
     "async_probe",
     "default_cert_path",
+    "parse_start_from",
     "OptionCode",
     "DEFAULT_PORT",
 ]
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"

@@ -7,6 +7,7 @@ Samsung client certificate (bundled ac14k_m.pem), with legacy ciphers enabled.
 from __future__ import annotations
 
 import asyncio
+import datetime
 import logging
 import re
 import ssl
@@ -20,6 +21,20 @@ _TERM = b"\r\n"
 _ATTR_RE = re.compile(r'Attr ID="([^"]*)" Type="([^"]*)" Value="([^"]*)"')
 _DUID_RE = re.compile(r'Device DUID="([^"]*)"')
 _TOKEN_RE = re.compile(r'Token="([^"]*)"')
+_STARTFROM_RE = re.compile(r'StartFrom="([^"]*)"')
+
+
+def parse_start_from(line: str) -> "datetime.datetime | None":
+    """Parse the device clock (UTC) from an AuthToken response StartFrom field."""
+    m = _STARTFROM_RE.search(line)
+    if not m:
+        return None
+    try:
+        return datetime.datetime.strptime(m.group(1), "%Y-%m-%d/%H:%M:%S").replace(
+            tzinfo=datetime.timezone.utc
+        )
+    except ValueError:
+        return None
 
 
 class SamsungAcError(Exception):
@@ -78,10 +93,16 @@ class SamsungAcClient:
         self._ctx = ssl_context
         self._duid = duid
         self._lock = asyncio.Lock()
+        self._start_from: datetime.datetime | None = None
 
     @property
     def duid(self):
         return self._duid
+
+    @property
+    def start_from(self) -> "datetime.datetime | None":
+        """Device clock (UTC) as reported at the last authentication."""
+        return self._start_from
 
     async def _readline(self, reader, timeout=5.0):
         data = await asyncio.wait_for(reader.readuntil(_TERM), timeout)
@@ -112,6 +133,7 @@ class SamsungAcClient:
         for _ in range(4):
             line = await self._readline(reader)
             if 'Type="AuthToken"' in line and 'Status="Okay"' in line:
+                self._start_from = parse_start_from(line)
                 return
             if 'Status="Fail"' in line and "Auth" in line:
                 raise AuthError(f"Token rejected: {line}")

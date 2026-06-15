@@ -13,7 +13,7 @@ import logging
 import re
 from collections.abc import Callable
 
-from .client import SamsungAcError, _DUID_RE, _TERM
+from .client import SamsungAcError, _DUID_RE, _TERM, parse_start_from
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -52,6 +52,7 @@ class SamsungAcStream:
         self._last_rx = 0.0
         self._waiters: list = []  # (predicate(state)->bool, Future)
         self.auth_failed = False
+        self.start_from = None  # device clock (UTC) from the AuthToken response
 
     # -- public API ----------------------------------------------------
     def set_on_update(self, callback: Callable[[dict], None] | None) -> None:
@@ -210,6 +211,7 @@ class SamsungAcStream:
         if "InvalidateAccount" in line:
             await self._send(f'<Request Type="AuthToken"><User Token="{self._token}"/></Request>')
         elif 'Type="AuthToken"' in line and 'Status="Okay"' in line:
+            self.start_from = parse_start_from(line)
             if self._duid:
                 await self._send(f'<Request Type="DeviceState" DUID="{self._duid}"></Request>')
             else:
