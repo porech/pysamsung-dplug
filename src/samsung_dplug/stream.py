@@ -51,6 +51,7 @@ class SamsungAcStream:
         duid: str | None = None,
         port: int = 2878,
         on_update: Callable[[dict], None] | None = None,
+        on_availability: Callable[[bool], None] | None = None,
         fallback_interval: float = 300.0,
         logger: logging.Logger | None = None,
     ) -> None:
@@ -60,6 +61,8 @@ class SamsungAcStream:
         self._ctx = ssl_context
         self._duid = duid
         self._on_update = on_update
+        self._on_availability = on_availability
+        self._avail_state: bool | None = None  # last notified connected state
         self._fallback = fallback_interval
         self._log = logger or _LOGGER
         self._reader: asyncio.StreamReader | None = None
@@ -80,6 +83,20 @@ class SamsungAcStream:
     def set_on_update(self, callback: Callable[[dict], None] | None) -> None:
         """Register a callback invoked (in the event loop) on each state change."""
         self._on_update = callback
+
+    def set_on_availability(self, callback: Callable[[bool], None] | None) -> None:
+        """Register a callback invoked when the connection goes up/down (on change)."""
+        self._on_availability = callback
+
+    def _notify_availability(self, connected: bool) -> None:
+        if connected == self._avail_state:
+            return
+        self._avail_state = connected
+        if self._on_availability:
+            try:
+                self._on_availability(connected)
+            except Exception:  # noqa: BLE001
+                self._log.exception("on_availability callback failed")
 
     @property
     def state(self) -> dict:
@@ -248,6 +265,7 @@ class SamsungAcStream:
 
     async def _close_socket(self) -> None:
         self._ready.clear()
+        self._notify_availability(False)
         if self._writer is not None:
             try:
                 self._writer.close()
@@ -333,6 +351,7 @@ class SamsungAcStream:
         self._resolve_waiters()
         if full and not self._ready.is_set():
             self._ready.set()
+            self._notify_availability(True)
         if self._on_update:
             try:
                 self._on_update(self.state)

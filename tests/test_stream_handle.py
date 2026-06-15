@@ -79,6 +79,22 @@ def test_status_push_resolves_confirm_waiter():
     asyncio.run(run())
 
 
+def test_availability_callback_fires_on_transitions():
+    async def run():
+        s, _ = _stream()
+        events = []
+        s.set_on_availability(lambda up: events.append(up))
+        # Becomes connected on first full DeviceState.
+        await s._handle('<Response Type="DeviceState" Status="Okay"><Attr ID="AC_FUN_POWER" Value="On"/></Response>')
+        # A second DeviceState must NOT re-fire (no transition).
+        await s._handle('<Response Type="DeviceState" Status="Okay"><Attr ID="AC_FUN_POWER" Value="Off"/></Response>')
+        await s._close_socket()  # disconnect
+        await s._close_socket()  # idempotent: no extra event
+        assert events == [True, False]
+
+    asyncio.run(run())
+
+
 def test_response_waiter_resolves_on_matching_line():
     async def run():
         s, _ = _stream()
