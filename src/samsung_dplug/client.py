@@ -14,6 +14,14 @@ import ssl
 from importlib import resources
 from xml.sax.saxutils import quoteattr
 
+from .schedule import (
+    Schedule,
+    build_delete_schedule,
+    build_get_schedule,
+    build_set_schedule,
+    parse_schedules,
+)
+
 _LOGGER = logging.getLogger(__name__)
 
 DEFAULT_PORT = 2878
@@ -254,6 +262,53 @@ class SamsungAcClient:
                     if m:
                         out[key] = m.group(1)
                 return out
+            finally:
+                writer.close()
+
+    async def async_get_schedules(self, tz=datetime.timezone.utc, now=None) -> list[Schedule]:
+        """Return the schedules stored on the unit, in local (`tz`) terms."""
+        if not self._duid:
+            await self.async_discover_duid()
+        async with self._lock:
+            reader, writer = await self._connect()
+            try:
+                await self._authenticate(reader, writer)
+                writer.write(build_get_schedule(self._duid).encode() + _TERM)
+                await writer.drain()
+                line = await self._read_until(reader, 'Type="GetSchedule"')
+                if 'Status="Okay"' not in line:
+                    raise SamsungAcError(f"GetSchedule failed: {line}")
+                return parse_schedules(line, tz, now)
+            finally:
+                writer.close()
+
+    async def async_set_schedule(self, sched: Schedule, tz=datetime.timezone.utc, now=None) -> None:
+        """Create (or, if `sched.schedule_id` is set, edit) an on-device schedule."""
+        if not self._duid:
+            await self.async_discover_duid()
+        async with self._lock:
+            reader, writer = await self._connect()
+            try:
+                await self._authenticate(reader, writer)
+                writer.write(build_set_schedule(sched, self._duid, tz, now).encode() + _TERM)
+                await writer.drain()
+                line = await self._read_until(reader, 'Type="SetSchedule"')
+                if 'Status="Okay"' not in line:
+                    raise SamsungAcError(f"SetSchedule failed: {line}")
+            finally:
+                writer.close()
+
+    async def async_delete_schedule(self, schedule_id: str) -> None:
+        """Delete the on-device schedule with the given id."""
+        async with self._lock:
+            reader, writer = await self._connect()
+            try:
+                await self._authenticate(reader, writer)
+                writer.write(build_delete_schedule(schedule_id).encode() + _TERM)
+                await writer.drain()
+                line = await self._read_until(reader, 'Type="DeleteSchedule"')
+                if 'Status="Okay"' not in line:
+                    raise SamsungAcError(f"DeleteSchedule failed: {line}")
             finally:
                 writer.close()
 

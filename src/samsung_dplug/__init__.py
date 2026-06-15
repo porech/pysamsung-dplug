@@ -10,6 +10,16 @@ from .client import (
     parse_start_from,
 )
 from .options import OptionCode
+from .schedule import (
+    EVERYDAY_TYPE,
+    EVERYWEEK,
+    ONCE,
+    Schedule,
+    mask_to_names,
+    mask_to_weekdays,
+    names_to_mask,
+    weekdays_to_mask,
+)
 from .stream import SamsungAcStream
 
 __all__ = [
@@ -22,7 +32,15 @@ __all__ = [
     "default_cert_path",
     "parse_start_from",
     "OptionCode",
+    "Schedule",
+    "ONCE",
+    "EVERYDAY_TYPE",
+    "EVERYWEEK",
+    "mask_to_names",
+    "names_to_mask",
+    "mask_to_weekdays",
+    "weekdays_to_mask",
     "DEFAULT_PORT",
 ]
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"

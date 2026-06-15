@@ -9,11 +9,19 @@ required. The read loop reconnects automatically; a watchdog periodically polls
 from __future__ import annotations
 
 import asyncio
+import datetime
 import logging
 import re
 from collections.abc import Callable
 
 from .client import SamsungAcError, _DUID_RE, _TERM, parse_start_from
+from .schedule import (
+    Schedule,
+    build_delete_schedule,
+    build_get_schedule,
+    build_set_schedule,
+    parse_schedules,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,6 +59,7 @@ class SamsungAcStream:
         self._watchdog_task: asyncio.Task | None = None
         self._last_rx = 0.0
         self._waiters: list = []  # (predicate(state)->bool, Future)
+        self._resp_waiters: list = []  # (needle, Future) for request/response exchanges
         self.auth_failed = False
         self.start_from = None  # device clock (UTC) from the AuthToken response
 
@@ -137,6 +146,43 @@ class SamsungAcStream:
                 still.append((pred, fut))
         self._waiters = still
 
+    async def _request(self, payload: str, needle: str, timeout: float = 10.0) -> str:
+        """Send a request and return the first response line containing `needle`,
+        reconnecting once if the send fails."""
+        await self._ensure_ready()
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        self._resp_waiters.append((needle, fut))
+        try:
+            try:
+                await self._send(payload)
+            except (OSError, SamsungAcError, asyncio.TimeoutError):
+                await self._force_reconnect()
+                await self._ensure_ready()
+                await self._send(payload)
+            return await asyncio.wait_for(fut, timeout)
+        finally:
+            self._resp_waiters = [(n, f) for (n, f) in self._resp_waiters if f is not fut]
+
+    async def async_get_schedules(self, tz=datetime.timezone.utc, now=None) -> list[Schedule]:
+        """Return the schedules stored on the unit, in local (`tz`) terms."""
+        line = await self._request(build_get_schedule(self._duid), 'Type="GetSchedule"')
+        if 'Status="Okay"' not in line:
+            raise SamsungAcError(f"GetSchedule failed: {line}")
+        return parse_schedules(line, tz, now)
+
+    async def async_set_schedule(self, sched: Schedule, tz=datetime.timezone.utc, now=None) -> None:
+        """Create (or, if `sched.schedule_id` is set, edit) an on-device schedule."""
+        line = await self._request(build_set_schedule(sched, self._duid, tz, now), 'Type="SetSchedule"')
+        if 'Status="Okay"' not in line:
+            raise SamsungAcError(f"SetSchedule failed: {line}")
+
+    async def async_delete_schedule(self, schedule_id: str) -> None:
+        """Delete the on-device schedule with the given id."""
+        line = await self._request(build_delete_schedule(schedule_id), 'Type="DeleteSchedule"')
+        if 'Status="Okay"' not in line:
+            raise SamsungAcError(f"DeleteSchedule failed: {line}")
+
     async def async_refresh(self) -> None:
         """Request a full DeviceState now (used as the fallback poll)."""
         if self._duid:
@@ -208,6 +254,9 @@ class SamsungAcStream:
     async def _handle(self, line: str) -> None:
         if not line:
             return
+        for needle, fut in self._resp_waiters:
+            if not fut.done() and needle in line:
+                fut.set_result(line)
         if "InvalidateAccount" in line:
             await self._send(f'<Request Type="AuthToken"><User Token="{self._token}"/></Request>')
         elif 'Type="AuthToken"' in line and 'Status="Okay"' in line:
