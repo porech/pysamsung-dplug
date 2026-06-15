@@ -16,6 +16,12 @@ integration, but works standalone.
 - Token acquisition (`GetToken`), authentication (`AuthToken`).
 - Read full device state (`DeviceState`) and send commands (`DeviceControl`).
 - Auto-discover the device id (`DeviceList`) and a passive `async_probe()`.
+- Live push updates with auto-reconnect (`SamsungAcStream`), alongside the
+  short-lived-connection `SamsungAcClient`.
+- On-device scheduling: read, create/edit and delete the unit's built-in
+  schedules, with local↔UTC time conversion.
+- Capability decoding from `AC_ADD2_OPTIONCODE` (`OptionCode`), the device clock,
+  firmware versions, and Wi-Fi provisioning for AP-mode onboarding.
 
 ## Install
 
@@ -52,13 +58,33 @@ token = await client.async_get_token()
 > `build_ssl_context()` does blocking file I/O; inside async frameworks run it in
 > an executor (e.g. Home Assistant: `await hass.async_add_executor_job(build_ssl_context)`).
 
+### On-device schedules
+
+The unit has a built-in scheduler that runs off its own clock, even with nothing
+connected. Times are stored in UTC; pass your local `tzinfo` and the library
+converts both ways.
+
+```python
+from zoneinfo import ZoneInfo
+from samsung_dplug import Schedule, EVERYWEEK, weekdays_to_mask
+
+tz = ZoneInfo("Europe/Rome")
+await client.async_get_schedules(tz=tz)            # -> list[Schedule] (local time)
+await client.async_set_schedule(                   # turn on at 07:00 on weekdays
+    Schedule(hour=7, minute=0, repeat=EVERYWEEK,
+             days=weekdays_to_mask(range(5)),       # Mon–Fri
+             attrs={"AC_FUN_POWER": "On"}),
+    tz=tz,
+)
+await client.async_delete_schedule("0")
+```
+
 ## Protocol notes
 
 Reverse-engineered from the official *Smart Air Conditioner* app and live
 devices. The unit greets with `DPLUG-1.x`, requires mutual TLS, and uses an
 XML request/response protocol. The DUID equals the Wi-Fi module MAC without
-separators. See the Home Assistant integration repo for the full write-up,
-including the undocumented `APConnectionConfig` Wi-Fi provisioning command.
+separators. See the Home Assistant integration repo for the full write-up.
 
 ## License
 
